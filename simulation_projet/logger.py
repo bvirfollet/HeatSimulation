@@ -1,38 +1,34 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-# Fichier: logger.py
-# Généré par le dispatcher de simulation_objet.py
-
+# --- Imports ---
 import time
 
-# --- Début des Blocs de Code ---
 
 class LoggerSimulation:
     """Classe simple pour gérer le logging avec niveaux et timestamps."""
-    NIVEAUX = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
 
-    def __init__(self, nom="Simulation", niveau="INFO"):
-        self.nom = nom
-        self.niveau = self.NIVEAUX.get(niveau, 20)
+    NIVEAUX = {
+        "DEBUG": 1,
+        "INFO": 2,
+        "WARNING": 3,
+        "ERROR": 4
+    }
 
-    def _log(self, niveau_msg, message):
-        if self.NIVEAUX.get(niveau_msg, 99) >= self.niveau:
-            timestamp = time.strftime("%H:%M:%S", time.localtime())
-            print(f"[{timestamp}] [{niveau_msg}] {message}")
+    def __init__(self, niveau="INFO"):
+        self.niveau_seuil = self.NIVEAUX.get(niveau.upper(), 2)
+
+    def _log(self, message, niveau_msg, niveau_str):
+        if self.NIVEAUX.get(niveau_str, 0) >= self.niveau_seuil:
+            timestamp = time.strftime('%H:%M:%S', time.localtime())
+            print(f"[{timestamp}] [{niveau_str}] {message}")
 
     def debug(self, message):
-        self._log("DEBUG", message)
+        self._log(message, 1, "DEBUG")
 
     def info(self, message):
-        self._log("INFO", message)
+        self._log(message, 2, "INFO")
 
     def warning(self, message):
-        self._log("WARNING", message)
+        self._log(message, 3, "WARNING")
 
     def error(self, message):
-        self._log("ERROR", message)
-
-
-# --- CLASSE 2: Paramètres ---
+        self._log(message, 4, "ERROR")
 

@@ -1,191 +1,208 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-# Fichier: modele.py
-# Généré par le dispatcher de simulation_objet.py
-
+# --- Imports ---
 from logger import LoggerSimulation
 from model_data import MATERIAUX
 from model_data import ZoneAir
 from parametres import ParametresSimulation
 import numpy as np
 
-# --- Début des Blocs de Code ---
 
 class ModeleMaison:
     """
-    Contient l'état du système : les matrices 3D (Température, Alpha, Lambda)
-    et les routines pour construire la géométrie.
+    Contient la représentation 3D (matrices NumPy) de la maison.
+    Gère la construction géométrique (murs, cloisons) et les
+    propriétés de chaque cellule.
     """
 
-    def __init__(self, params):
+    def __init__(self, params, logger=None):
+        self.logger = logger if logger else LoggerSimulation(niveau="INFO")
         self.params = params
-        self.logger = LoggerSimulation(nom="ModeleMaison")
 
         # Dimensions de la grille
         N_x, N_y, N_z = params.N_x, params.N_y, params.N_z
 
-        # Initialise les matrices NumPy
-        # Matrice T (Température):
-        self.T = np.full((N_x, N_y, N_z), params.temp_exterieure, dtype=np.float64)
+        # Matrice 3D des Températures (float)
+        self.T = np.full((N_x, N_y, N_z), params.T_INTERIEUR_INIT, dtype=float)
 
-        # Matrice Alpha (Diffusivité):
-        # 0.0 correspond à 'FIXE' (exterieur)
-        self.Alpha = np.full((N_x, N_y, N_z), MATERIAUX["EXTERIEUR_FIXE"]["alpha"], dtype=np.float64)
+        # Matrice 3D des Propriétés (float)
+        # On stocke Lambda (conductivité)
+        self.Lambda = np.full((N_x, N_y, N_z), 0.0, dtype=float)
 
-        # Matrice Lambda (Conductivité):
-        self.Lambda = np.full((N_x, N_y, N_z), MATERIAUX["EXTERIEUR_FIXE"]["lambda"], dtype=np.float64)
+        # On stocke Alpha (diffusivité)
+        # Note: Alpha >= 0 pour les solides (conduction)
+        #       Alpha = 0.0 pour les limites fixes (pas de calcul)
+        #       Alpha < 0 pour les zones d'air (ex: -1, -2, ...) (convection)
+        self.Alpha = np.full((N_x, N_y, N_z), 0.0, dtype=float)
 
-        # --- NOUVEAU (Étape 1 Convection) ---
-        # Dictionnaire des zones d'air. Clé = ID (ex: -1), Valeur = objet ZoneAir
-        self.zones_air = {}
-        # Liste des indices (i,j,k) des cellules solides en contact avec l'air
-        self.surfaces_convection = {}  # Format: {id_zone: [ (i,j,k), ... ]}
+        # Gestion des zones d'air (pour la convection)
+        self.zones_air = {} # Dictionnaire {id: ZoneAir}
+
+        # Liste des surfaces de convection
+        # (index, id_zone, [ix, iy, iz])
+        self.surfaces_convection = []
+        # Version NumPy pour calcul rapide: [ (ix1, iy1, iz1), (ix2, iy2, iz2), ... ]
+        self.surfaces_convection_idx = {} # Dico: {id_zone: np.array}
 
         self.logger.info("Modèle 3D (matrices NumPy) initialisé.")
 
-    def _coords_metres_vers_indices(self, coord_m):
-        """Convertit un tuple (x, y, z) en mètres en indices (i, j, k)."""
-        i = int(round(coord_m[0] / self.params.ds))
-        j = int(round(coord_m[1] / self.params.ds))
-        k = int(round(coord_m[2] / self.params.ds))
-        # S'assure de rester dans les bornes
-        i = max(0, min(i, self.params.N_x - 1))
-        j = max(0, min(j, self.params.N_y - 1))
-        k = max(0, min(k, self.params.N_z - 1))
-        return i, j, k
-
-    def construire_volume_metres(self, p1_m, p2_m, nom_materiau, temp_init=None):
-        """
-        Remplit un volume de la grille (défini par deux coins en mètres)
-        avec les propriétés d'un matériau.
-        """
-        i1, j1, k1 = self._coords_metres_vers_indices(p1_m)
-        i2, j2, k2 = self._coords_metres_vers_indices(p2_m)
-
-        # S'assure que p1 est le coin min et p2 le coin max
-        i_min, i_max = min(i1, i2), max(i1, i2)
-        j_min, j_max = min(j1, j2), max(j1, j2)
-        k_min, k_max = min(k1, k2), max(k1, k2)
-
+    def _calculer_alpha(self, nom_materiau):
+        """Calcule la diffusivité (alpha) à partir des données MATERIAUX."""
         if nom_materiau not in MATERIAUX:
-            self.logger.error(f"Matériau '{nom_materiau}' inconnu. Construction annulée.")
+            self.logger.warning(f"Matériau '{nom_materiau}' inconnu. Utilise LIMITE_FIXE.")
+            nom_materiau = "LIMITE_FIXE"
+
+        L, R, C = MATERIAUX[nom_materiau]
+
+        if L < 0: # C'est un marqueur de zone d'air (ex: -1)
+            return L
+        if L == 0 or (R * C) == 0: # C'est une limite fixe
+            return 0.0
+
+        # alpha = lambda / (rho * cp)
+        return L / (R * C)
+
+    def construire_volume_metres(self, pos_depart_m, pos_fin_m, nom_materiau):
+        """
+        Remplit un volume de la grille avec un matériau donné,
+        en utilisant des coordonnées en mètres.
+
+        pos_depart_m: tuple (x0, y0, z0) en mètres
+        pos_fin_m: tuple (x1, y1, z1) en mètres
+        nom_materiau: "PARPAING", "AIR", "LIMITE_FIXE", ...
+        """
+
+        # Conversion des mètres en indices de grille
+        # On utilise np.round pour trouver l'indice le plus proche
+        ds = self.params.ds
+        i_min = max(0, int(np.round(pos_depart_m[0] / ds)))
+        i_max = min(self.params.N_x, int(np.round(pos_fin_m[0] / ds)) + 1)
+        j_min = max(0, int(np.round(pos_depart_m[1] / ds)))
+        j_max = min(self.params.N_y, int(np.round(pos_fin_m[1] / ds)) + 1)
+        k_min = max(0, int(np.round(pos_depart_m[2] / ds)))
+        k_max = min(self.params.N_z, int(np.round(pos_fin_m[2] / ds)) + 1)
+
+        # Récupérer les propriétés
+        if nom_materiau not in MATERIAUX:
+            self.logger.warning(f"Matériau '{nom_materiau}' inconnu. N'a rien fait.")
             return
 
-        mat = MATERIAUX[nom_materiau]
-        mat_alpha = mat["alpha"]
+        val_lambda, _, _ = MATERIAUX[nom_materiau]
+        val_alpha = self._calculer_alpha(nom_materiau)
 
-        # --- NOUVEAU (Étape 1 Convection) ---
-        if mat_alpha < 0:  # C'est une ZoneAir
-            # L'ID de la zone est l'alpha négatif (ex: -1, -2)
-            id_zone = int(mat_alpha)
+        # Remplissage des matrices
+        # C'est une "slice" NumPy, très rapide
+        self.Alpha[i_min:i_max, j_min:j_max, k_min:k_max] = val_alpha
+        self.Lambda[i_min:i_max, j_min:j_max, k_min:k_max] = val_lambda
 
+        # Cas spécial: Gérer les zones d'air (pour la convection)
+        if val_alpha < 0:
+            id_zone = int(val_alpha) # ex: -1
+
+            # Créer la zone si elle n'existe pas
             if id_zone not in self.zones_air:
-                # Crée la zone si elle n'existe pas
-                t_init = temp_init if temp_init is not None else self.params.temp_interieure_initiale
-                self.zones_air[id_zone] = ZoneAir(f"Zone {id_zone}", self.params, t_init)
+                self.zones_air[id_zone] = ZoneAir(
+                    f"Zone {id_zone}",
+                    self.params,
+                    self.logger,
+                    self.params.T_INTERIEUR_INIT
+                )
 
-            zone = self.zones_air[id_zone]
+            # Mettre à jour le volume de la zone
             volume_cellule = self.params.ds ** 3
+            nb_cellules = (i_max - i_min) * (j_max - j_min) * (k_max - k_min)
+            self.zones_air[id_zone].volume_m3 += (nb_cellules * volume_cellule)
 
-            # Remplit les matrices
-            for i in range(i_min, i_max + 1):
-                for j in range(j_min, j_max + 1):
-                    for k in range(k_min, k_max + 1):
-                        self.Alpha[i, j, k] = mat_alpha
-                        self.Lambda[i, j, k] = mat["lambda"]
-                        if temp_init is not None:
-                            self.T[i, j, k] = temp_init
-                        else:
-                            self.T[i, j, k] = zone.temperature  # Température initiale de la zone
+        # Gérer les conditions limites (température fixe)
+        if nom_materiau == "LIMITE_FIXE":
+            self.T[i_min:i_max, j_min:j_max, k_min:k_max] = self.params.T_EXTERIEUR_INIT
 
-                        # Ajoute le volume à la zone
-                        zone.ajouter_volume_cellule(volume_cellule)
-
-        else:  # C'est un matériau SOLIDE ou FIXE
-            # Tranches NumPy pour une assignation rapide
-            s = (slice(i_min, i_max + 1),
-                 slice(j_min, j_max + 1),
-                 slice(k_min, k_max + 1))
-
-            self.Alpha[s] = mat_alpha
-            self.Lambda[s] = mat["lambda"]
-
-            # Applique la température initiale si spécifiée
-            if temp_init is not None:
-                self.T[s] = temp_init
-            elif mat["type"] == 'FIXE':
-                # Cas spécial pour EXTERIEUR_FIXE (température par défaut)
-                self.T[s] = self.params.temp_exterieure
-
-        self.logger.info(f"Volume [{i_min}:{i_max}, {j_min}:{j_max}, {k_min}:{k_max}] rempli avec '{nom_materiau}'.")
+        self.logger.info(f"Volume [{i_min}:{i_max-1}, {j_min}:{j_max-1}, {k_min}:{k_max-1}] rempli avec '{nom_materiau}'.")
 
     def preparer_simulation(self):
         """
-        Finalise l'initialisation avant de lancer la simulation.
-        - Finalise les zones d'air
-        - Détecte les surfaces de convection
+        Appelée avant de lancer la simulation pour finaliser
+        le modèle (détection des surfaces, etc.)
         """
         self.logger.info("Préparation de la simulation...")
-        # 1. Finaliser les zones d'air
-        for zone_id, zone in self.zones_air.items():
-            zone.finaliser_initialisation()
+        # Finaliser les calculs de volume/capacité pour les zones d'air
+        for zone in self.zones_air.values():
+            zone.finaliser_volume()
 
-        # 2. Détecter les surfaces
+        # Détecter les surfaces de convection
         self._detecter_surfaces_convection()
 
     def _detecter_surfaces_convection(self):
         """
-        (Étape 1) Identifie les indices (i,j,k) des cellules SOLIDES
-        qui sont adjacentes à une cellule AIR (alpha < 0).
-
-        Cette version utilise NumPy pour la performance.
+        (Validation Étape 1)
+        Scan a (NumPy) la matrice Alpha pour trouver tous les points SOLIDES
+        (Alpha >= 0) qui sont adjacents à un point AIR (Alpha < 0).
         """
         self.logger.info("Détection des surfaces de convection (NumPy)...")
 
-        # 1. Identifier les cellules AIR (booléen)
-        est_air = (self.Alpha < 0)
-        # 2. Identifier les cellules SOLIDES (booléen)
-        est_solide = (self.Alpha >= 0)  # Note: inclut FIXE (alpha=0)
+        # 1. Identifier les solides (True où Alpha >= 0)
+        solides = (self.Alpha >= 0)
+        # 2. Identifier l'air (True où Alpha < 0)
+        air = (self.Alpha < 0)
 
-        # 3. Trouver les frontières
-        # On "décale" la grille d'air dans les 6 directions.
-        # Si une cellule "solide" touche une cellule "air décalée",
-        # alors c'est une surface.
+        # 3. Trouver les surfaces en X
+        # Solide à [i] et Air à [i+1] -> Solide est une surface
+        surf_x1 = solides[:-1, :, :] & air[1:, :, :]
+        # Air à [i] et Solide à [i+1] -> Solide est une surface
+        surf_x2 = air[:-1, :, :] & solides[1:, :, :]
 
-        frontiere = np.zeros_like(est_solide, dtype=bool)
+        # 4. Trouver les surfaces en Y
+        surf_y1 = solides[:, :-1, :] & air[:, 1:, :]
+        surf_y2 = air[:, :-1, :] & solides[:, 1:, :]
 
-        # Voisins en X
-        frontiere[1:, :, :] |= (est_solide[1:, :, :] & est_air[:-1, :, :])
-        frontiere[:-1, :, :] |= (est_solide[:-1, :, :] & est_air[1:, :, :])
-        # Voisins en Y
-        frontiere[:, 1:, :] |= (est_solide[:, 1:, :] & est_air[:, :-1, :])
-        frontiere[:, :-1, :] |= (est_solide[:, :-1, :] & est_air[:, 1:, :])
-        # Voisins en Z
-        frontiere[:, :, 1:] |= (est_solide[:, :, 1:] & est_air[:, :, :-1])
-        frontiere[:, :, :-1] |= (est_solide[:, :, :-1] & est_air[:, :, 1:])
+        # 5. Trouver les surfaces en Z
+        surf_z1 = solides[:, :, :-1] & air[:, :, 1:]
+        surf_z2 = air[:, :, :-1] & solides[:, :, 1:]
 
-        # 4. Extraire les indices (i,j,k) de ces points de surface
-        indices_surface = np.argwhere(frontiere)
+        # 6. Combiner tous les masques de surface
+        # On crée des masques 3D complets (taille N_x, N_y, N_z)
+        # en complétant avec 'False' sur le bord manquant.
+        pad_x = ((0, 1), (0, 0), (0, 0)) # Pad à la fin de l'axe X
+        pad_y = ((0, 0), (0, 1), (0, 0))
+        pad_z = ((0, 0), (0, 0), (0, 1))
 
-        # 5. Classer les indices par zone d'air
-        # (Pour l'instant, on suppose une seule zone d'air, id = -1)
-        # Une version plus avancée devrait vérifier *quelle* zone d'air
-        # est adjacente à quel solide.
+        # Le masque final 'surface_totale' est True à (i,j,k)
+        # si la cellule (i,j,k) est un SOLIDE touchant de l'AIR.
+        surface_totale = (
+            np.pad(surf_x1, pad_x, constant_values=False) |
+            np.pad(surf_x2, ((1, 0), (0, 0), (0, 0)), constant_values=False) |
+            np.pad(surf_y1, pad_y, constant_values=False) |
+            np.pad(surf_y2, ((0, 0), (1, 0), (0, 0)), constant_values=False) |
+            np.pad(surf_z1, pad_z, constant_values=False) |
+            np.pad(surf_z2, ((0, 0), (0, 0), (1, 0)), constant_values=False)
+        )
 
-        # Pour notre Étape 1, on met tout dans la zone -1 (si elle existe)
-        zone_id_par_defaut = -1
-        if zone_id_par_defaut in self.zones_air:
-            self.surfaces_convection[zone_id_par_defaut] = indices_surface
-            self.logger.info(
-                f"Détection terminée: {len(indices_surface)} cellules de surface trouvées pour Zone {zone_id_par_defaut}.")
-        else:
-            self.logger.warning("Aucune ZoneAir (-1) trouvée. Pas de surfaces de convection.")
+        # 7. Trouver les ID de zone d'air adjacents
+        # On ne le fait que pour les zones d'air (ex: -1)
+        for id_zone in self.zones_air.keys():
+            # Masque de l'air pour CETTE zone
+            air_zone_specifique = (self.Alpha == id_zone)
 
-        # (Debug) On peut assigner une valeur spéciale pour voir les surfaces
-        # for i, j, k in indices_surface:
-        #    self.Lambda[i,j,k] = 999
+            # Recalculer les surfaces juste pour cette zone
+            surf_x1_z = solides[:-1, :, :] & air_zone_specifique[1:, :, :]
+            surf_x2_z = air_zone_specifique[:-1, :, :] & solides[1:, :, :]
+            surf_y1_z = solides[:, :-1, :] & air_zone_specifique[:, 1:, :]
+            surf_y2_z = air_zone_specifique[:, :-1, :] & solides[:, 1:, :]
+            surf_z1_z = solides[:, :, :-1] & air_zone_specifique[:, :, 1:]
+            surf_z2_z = air_zone_specifique[:, :, :-1] & solides[:, :, 1:]
 
+            surface_zone = (
+                np.pad(surf_x1_z, pad_x, constant_values=False) |
+                np.pad(surf_x2_z, ((1, 0), (0, 0), (0, 0)), constant_values=False) |
+                np.pad(surf_y1_z, pad_y, constant_values=False) |
+                np.pad(surf_y2_z, ((0, 0), (1, 0), (0, 0)), constant_values=False) |
+                np.pad(surf_z1_z, pad_z, constant_values=False) |
+                np.pad(surf_z2_z, ((0, 0), (0, 0), (1, 0)), constant_values=False)
+            )
 
-# --- CLASSE 6: Simulation ---
+            # 8. Extraire les coordonnées (indices) des points de surface
+            # np.where(surface_zone) renvoie 3 arrays: (array_i, array_j, array_k)
+            # np.vstack(...).T les transforme en une liste de triplets [(i,j,k), ...]
+            indices_surface = np.vstack(np.where(surface_zone)).T
+            self.surfaces_convection_idx[id_zone] = indices_surface
+
+            self.logger.info(f"Détection terminée: {len(indices_surface)} cellules de surface trouvées pour Zone {id_zone}.")
 

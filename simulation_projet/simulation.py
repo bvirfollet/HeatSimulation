@@ -1,9 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-# Fichier: simulation.py
-# Généré par le dispatcher de simulation_objet.py
-
+# --- Imports ---
 from logger import LoggerSimulation
 from modele import ModeleMaison
 from parametres import ParametresSimulation
@@ -11,190 +6,158 @@ from stockage import StockageResultats
 import numpy as np
 import time
 
-# --- Début des Blocs de Code ---
 
 class Simulation:
     """
-    Contrôleur principal de la simulation.
-    Gère la boucle de temps et orchestre le modèle et le stockage.
+    Gère le moteur de simulation (boucle temporelle, calculs).
     """
 
-    def __init__(self, modele, stockage, params):
+    def __init__(self, modele, stockage, params, logger=None):
+        self.logger = logger if logger else LoggerSimulation(niveau="INFO")
         self.modele = modele
         self.stockage = stockage
         self.params = params
-        self.logger = LoggerSimulation(niveau="INFO")
 
-        # Coefficient de stabilité (calculé une fois)
-        # On ignore les zones d'air (alpha < 0) pour ce calcul
+        # Créer une copie de T pour le calcul (T à t+dt)
+        self.T_suivant = np.copy(self.modele.T)
+
+        # --- Pré-calculs de Stabilité et Masques ---
+
+        # 1. Stabilité (CFL)
+        # On ne prend que les 'solides' (Alpha >= 0)
         alpha_solides = self.modele.Alpha[self.modele.Alpha >= 0]
         if len(alpha_solides) > 0:
-            alpha_max = np.max(alpha_solides)
+            self.alpha_max = np.max(alpha_solides)
+            self.logger.info(f"Alpha max (solides): {self.alpha_max:0.2e}")
+
+            facteur_cfl = (self.alpha_max * self.params.dt) / (self.params.ds ** 2)
+            self.logger.info(f"Facteur de stabilité (CFL): {facteur_cfl:.4f}")
+            if facteur_cfl > 1/6:
+                self.logger.warning("Facteur CFL > 1/6. Risque d'instabilité !")
+
         else:
-            alpha_max = 0.0
+            self.alpha_max = 0
+            self.logger.info("Aucun solide détecté, calcul de conduction désactivé.")
 
-        self.facteur_stabilite = (alpha_max * self.params.dt) / (self.params.ds ** 2)
-        self.logger.info(f"Alpha max (solides): {alpha_max:.2e}")
-        self.logger.info(f"Facteur de stabilité (CFL): {self.facteur_stabilite:.4f}")
+        # 2. Masques NumPy (pour calculs vectorisés)
+        # On ne calcule que les points qui sont :
+        # 1) Pas une limite fixe (Alpha != 0)
+        # 2) Pas de l'air (Alpha >= 0)
+        # 3) Pas sur les bords (car on utilise les voisins)
 
-        if self.facteur_stabilite > 1 / 6:
-            self.logger.error(f"SIMULATION INSTABLE ! Facteur CFL > 1/6.")
-            self.logger.error("Réduisez le pas de temps (dt) ou augmentez la taille des cellules (ds).")
-            # raise ValueError("Simulation instable (CFL > 1/6)")
+        # Masque des "solides" (alpha > 0)
+        masque_solides = (self.modele.Alpha > 0)
+
+        # Masque "intérieur" (pas sur les 6 faces de la boîte)
+        masque_interieur = np.zeros_like(self.modele.Alpha, dtype=bool)
+        masque_interieur[1:-1, 1:-1, 1:-1] = True
+
+        # Le masque final des points à calculer par CONDUCTION
+        self.masque_conduction = (masque_solides & masque_interieur)
 
         self.logger.info("Simulation initialisée.")
 
+
     def lancer_simulation(self, duree_s, intervalle_stockage_s):
-        """
-        Exécute la boucle de simulation principale.
-        """
-        # --- NOUVEAU (Étape 1) ---
-        # Préparer le modèle (détecter les surfaces, etc.)
-        self.modele.preparer_simulation()
+        """Boucle de simulation principale."""
+
+        temps_simule_s = 0.0
+        prochain_stockage_s = 0.0
+        dt = self.params.dt
 
         self.logger.info(f"Lancement de la simulation pour {duree_s}s...")
 
-        temps_simule_s = 0.0
-        temps_dernier_stockage = -np.inf
-        dt = self.params.dt
+        while temps_simule_s <= duree_s:
 
-        # Fait une copie de la matrice T pour le calcul (T à t+dt)
-        T_suivante = np.copy(self.modele.T)
+            # 1. Étape de Conduction (dans les solides)
+            self._etape_conduction()
 
-        try:
-            while temps_simule_s <= duree_s:
+            # 2. Étape de Convection (Air <-> Surfaces)
+            # (Sera implémentée à l'étape 2)
+            # self._etape_convection()
 
-                # 1. Stocker l'étape actuelle (si nécessaire)
-                if (temps_simule_s - temps_dernier_stockage) >= intervalle_stockage_s:
-                    pertes = self._calculer_pertes_W()
-                    self.stockage.stocker_etape(temps_simule_s, self.modele.T, pertes)
-                    temps_dernier_stockage = temps_simule_s
+            # 3. Mise à jour de la matrice principale
+            # T(t) devient T(t+dt)
+            np.copyto(self.modele.T, self.T_suivant)
 
-                # 2. Calculer l'étape de Conduction (pour les SOLIDES)
-                self._etape_conduction(self.modele.T, T_suivante)
-
-                # 3. Calculer l'étape de Convection (pour les ZONES D'AIR)
-                # (Sera implémenté à l'Étape 2)
-                # self._etape_convection(self.modele.T, T_suivante)
-
-                # 4. Échanger les matrices (t devient t+dt)
-                self.modele.T, T_suivante = T_suivante, self.modele.T
-
-                # 5. Avancer le temps
-                temps_simule_s += dt
-
-            # Stocker la toute dernière étape
+            # 4. Calcul des pertes (optionnel, coûteux)
             pertes = self._calculer_pertes_W()
-            self.stockage.stocker_etape(temps_simule_s, self.modele.T, pertes)
 
-            self.logger.info("Simulation terminée.")
+            # 5. Stockage des résultats
+            if temps_simule_s >= prochain_stockage_s:
+                self.stockage.stocker_etape(temps_simule_s, self.modele.T, pertes)
+                prochain_stockage_s += intervalle_stockage_s
 
-        except KeyboardInterrupt:
-            self.logger.warning("Simulation interrompue par l'utilisateur.")
-            # Sauvegarder l'état actuel
-            pertes = self._calculer_pertes_W()
-            self.stockage.stocker_etape(temps_simule_s, self.modele.T, pertes)
+            temps_simule_s += dt
 
-    def _etape_conduction(self, T_actuelle, T_suivante):
+        self.logger.info("Simulation terminée.")
+
+    def _etape_conduction(self):
         """
-        Calcule la conduction pour UN pas de temps sur toutes les
-        cellules 'SOLIDES' (alpha > 0).
-        Version vectorisée NumPy.
+        Calcule la conduction (vectorisée avec NumPy) sur tous
+        les points définis par 'self.masque_conduction'.
         """
 
-        # Crée un masque 3D des cellules à calculer (Solides, pas FIXE)
-        masque_solide = (self.modele.Alpha > 0)
-
-        # Extrait les sous-matrices nécessaires (performant)
-        T = T_actuelle
+        T = self.modele.T # T à l'instant t
         A = self.modele.Alpha
-        ds_carre = self.params.ds ** 2
+        m = self.masque_conduction # Masque des points à calculer
         dt = self.params.dt
+        ds_carre = self.params.ds ** 2
 
         # Calcul du Laplacien 3D (vectorisé)
-        # On ne calcule que là où le masque est Vrai
-        laplacien_T = np.zeros_like(T)
+        # T[m] -> ne prend que les points du masque
+        laplacien = (
+            T[1:-1, 1:-1, 2:]  [m[1:-1, 1:-1, 1:-1]] + # (i, j, k+1)
+            T[1:-1, 1:-1, :-2] [m[1:-1, 1:-1, 1:-1]] + # (i, j, k-1)
+            T[1:-1, 2:, 1:-1]  [m[1:-1, 1:-1, 1:-1]] + # (i, j+1, k)
+            T[1:-1, :-2, 1:-1] [m[1:-1, 1:-1, 1:-1]] + # (i, j-1, k)
+            T[2:, 1:-1, 1:-1]  [m[1:-1, 1:-1, 1:-1]] + # (i+1, j, k)
+            T[:-2, 1:-1, 1:-1] [m[1:-1, 1:-1, 1:-1]] - # (i-1, j, k)
+            6 * T[m]
+        ) / ds_carre
 
-        # --- ATTENTION ---
-        # Ce calcul du Laplacien n'est correct que pour les cellules
-        # [1:-1, 1:-1, 1:-1]. Il faudrait une gestion plus fine
-        # des masques pour les bords. Pour l'instant, on suppose que
-        # les cellules solides ne sont pas collées aux bords de la
-        # simulation totale (ce qui est le cas avec notre 'EXTERIEUR_FIXE')
-
-        # On ne calcule le Laplacien que sur les points intérieurs
-        # pour éviter les erreurs d'index
-        masque_interieur = np.zeros_like(T, dtype=bool)
-        masque_interieur[1:-1, 1:-1, 1:-1] = True
-
-        # Masque final = Solide ET Intérieur
-        masque_calcul = masque_solide & masque_interieur
-
-        # Slicing plus sûr
-        T_centre = T[1:-1, 1:-1, 1:-1]
-
-        laplacien_slice = (
-                                  T[2:, 1:-1, 1:-1] - 2 * T_centre + T[:-2, 1:-1, 1:-1] +
-                                  T[1:-1, 2:, 1:-1] - 2 * T_centre + T[1:-1, :-2, 1:-1] +
-                                  T[1:-1, 1:-1, 2:] - 2 * T_centre + T[1:-1, 1:-1, :-2]
-                          ) / ds_carre
-
-        # Appliquer le Laplacien calculé
-        laplacien_T[1:-1, 1:-1, 1:-1] = laplacien_slice
-
-        # Mise à jour de la température
-        # T(t+dt) = T(t) + alpha * dt * Laplacien
-        T_suivante[masque_calcul] = T[masque_calcul] + A[masque_calcul] * dt * laplacien_T[masque_calcul]
-
-        # S'assure que les zones non calculées (FIXE, AIR, et bords) gardent leur valeur
-        T_suivante[~masque_calcul] = T[~masque_calcul]
-
-    # (L'implémentation de _etape_convection viendra à l'Étape 2)
-    # def _etape_convection(self, T_actuelle, T_suivante): ...
+        # Appliquer la formule T(t+dt) = T(t) + alpha * dt * Laplacien
+        # A[m] -> ne prend que les alpha des points du masque
+        self.T_suivant[m] = T[m] + A[m] * dt * laplacien
 
     def _calculer_pertes_W(self):
         """
-        Calcule les pertes thermiques totales (en Watts)
-        à travers les surfaces 'FIXE' (ex: extérieur).
+        Calcule les pertes totales (en Watts) vers les cellules
+        à température "FIXE" (ex: extérieur).
+        Utilise la Loi de Fourier: Flux = lambda * (T_int - T_ext) / ds
         """
-        # (Version simplifiée: on ne calcule que les pertes vers
-        # les cellules 'FIXE' (alpha=0))
 
-        masque_fixe = (self.modele.Alpha == 0)
-        masque_non_fixe = (self.modele.Alpha != 0)
-
-        pertes_W = 0.0
         T = self.modele.T
         L = self.modele.Lambda
         ds = self.params.ds
-        surface_cellule = ds * ds
+        surface_cellule = ds**2
 
-        # Flux en X (i+1 est fixe, i est non-fixe)
-        flux_x1 = (L[:-1, :, :] * (T[:-1, :, :] - T[1:, :, :]) / ds) * (
-                    masque_non_fixe[:-1, :, :] & masque_fixe[1:, :, :])
-        # Flux en X (i-1 est fixe, i est non-fixe)
-        flux_x2 = (L[1:, :, :] * (T[1:, :, :] - T[:-1, :, :]) / ds) * (
-                    masque_non_fixe[1:, :, :] & masque_fixe[:-1, :, :])
+        # Masque des points 'FIXES' (Alpha == 0)
+        masque_fixe = (self.modele.Alpha == 0)
+        # Masque des points 'NON-FIXES' (Alpha != 0)
+        masque_non_fixe = (self.modele.Alpha != 0)
 
-        # Flux en Y (j+1 est fixe, j est non-fixe)
-        flux_y1 = (L[:, :-1, :] * (T[:, :-1, :] - T[:, 1:, :]) / ds) * (
-                    masque_non_fixe[:, :-1, :] & masque_fixe[:, 1:, :])
-        # Flux en Y (j-1 est fixe, j est non-fixe)
-        flux_y2 = (L[:, 1:, :] * (T[:, 1:, :] - T[:, :-1, :]) / ds) * (
-                    masque_non_fixe[:, 1:, :] & masque_fixe[:, :-1, :])
+        # Pertes en X
+        flux_x1 = (L[1:,:,:] * (T[1:,:,:] - T[:-1,:,:]) / ds) * (masque_non_fixe[1:,:,:] & masque_fixe[:-1,:,:])
+        flux_x2 = (L[:-1,:,:] * (T[:-1,:,:] - T[1:,:,:]) / ds) * (masque_non_fixe[:-1,:,:] & masque_fixe[1:,:,:])
 
-        # Flux en Z (k+1 est fixe, k est non-fixe)
-        flux_z1 = (L[:, :, :-1] * (T[:, :, :-1] - T[:, :, 1:]) / ds) * (
-                    masque_non_fixe[:, :, :-1] & masque_fixe[:, :, 1:])
-        # Flux en Z (k-1 est fixe, k est non-fixe)
-        flux_z2 = (L[:, :, 1:] * (T[:, :, 1:] - T[:, :, :-1]) / ds) * (
-                    masque_non_fixe[:, :, 1:] & masque_fixe[:, :, :-1])
+        # Pertes en Y
+        flux_y1 = (L[:,1:,:] * (T[:,1:,:] - T[:,:-1,:]) / ds) * (masque_non_fixe[:,1:,:] & masque_fixe[:,:-1,:])
+        flux_y2 = (L[:,:-1,:] * (T[:,:-1,:] - T[:,1:,:]) / ds) * (masque_non_fixe[:,:-1,:] & masque_fixe[:,1:,:])
+
+        # Pertes en Z
+        flux_z1 = (L[:,:,1:] * (T[:,:,1:] - T[:,:,:-1]) / ds) * (masque_non_fixe[:,:,1:] & masque_fixe[:,:,:-1])
+        flux_z2 = (L[:,:,:-1] * (T[:,:,:-1] - T[:,:,1:]) / ds) * (masque_non_fixe[:,:,:-1] & masque_fixe[:,:,1:])
 
         # Somme de tous les flux (en W/m^2) * surface_cellule (m^2) = W
-        pertes_W = np.sum(flux_x1 + flux_x2 + flux_y1 + flux_y2 + flux_z1 + flux_z2) * surface_cellule
+        # --- CORRECTION (ValueError) ---
+        # On ne peut pas additionner des matrices de formes différentes.
+        # On doit d'abord sommer chaque flux, PUIS les additionner.
+        somme_flux_x = np.sum(flux_x1) + np.sum(flux_x2)
+        somme_flux_y = np.sum(flux_y1) + np.sum(flux_y2)
+        somme_flux_z = np.sum(flux_z1) + np.sum(flux_z2)
+
+        pertes_W = (somme_flux_x + somme_flux_y + somme_flux_z) * surface_cellule
 
         return pertes_W
-
-
-# --- CLASSE 7: Visualisation ---
 

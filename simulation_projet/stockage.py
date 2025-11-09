@@ -1,74 +1,80 @@
-# --- Imports ---
 from logger import LoggerSimulation
 import os
 import pickle
 import shutil
+import copy
 
 
 class StockageResultats:
     """
-    Gère la sauvegarde des résultats de simulation (matrices 3D)
-    sur le disque pour éviter la saturation de la RAM.
+    Gère le stockage des résultats de simulation sur le disque.
+    N'utilise pas la RAM pour stocker l'historique complet.
     """
 
-    def __init__(self, chemin_sortie, logger=None):
-        self.logger = logger if logger else LoggerSimulation(niveau="INFO")
+    def __init__(self, chemin_sortie, logger):
         self.chemin_sortie = chemin_sortie
-        self.index_temps = [] # Liste de (index, temps_s, pertes_W)
-        self.index_fichier = 0
+        self.logger = logger
+        self.index_temps = []  # Liste de (temps_s, nom_fichier)
 
-        # Nettoyer l'ancien dossier de résultats s'il existe
-        try:
-            if os.path.exists(self.chemin_sortie):
+        # Nettoyer le dossier de résultats précédent
+        if os.path.exists(self.chemin_sortie):
+            try:
                 shutil.rmtree(self.chemin_sortie)
                 self.logger.info(f"Ancien dossier de résultats '{self.chemin_sortie}' supprimé.")
+            except Exception as e:
+                self.logger.error(f"Impossible de supprimer le dossier '{self.chemin_sortie}': {e}")
+
+        # Créer le nouveau dossier
+        try:
             os.makedirs(self.chemin_sortie)
+            self.logger.info(f"Stockage configuré pour écrire dans: {self.chemin_sortie}")
         except Exception as e:
-            self.logger.error(f"Impossible de nettoyer le dossier de sortie: {e}")
+            self.logger.error(f"Impossible de créer le dossier '{self.chemin_sortie}': {e}")
 
-        self.logger.info(f"Stockage configuré pour écrire dans: {self.chemin_sortie}")
+    def stocker_etape(self, temps_s, matrice_T, pertes_W, T_zones):
+        """Sauvegarde l'état actuel (matrice T) sur le disque."""
 
-    def stocker_etape(self, temps_s, matrice_T, pertes_W):
-        """Sauvegarde une matrice 3D complète sur le disque via pickle."""
-
-        nom_fichier = f"etape_{self.index_fichier:05d}.pkl"
+        nom_fichier = f"etape_{len(self.index_temps):05d}.pkl"
         chemin_complet = os.path.join(self.chemin_sortie, nom_fichier)
+
+        etat = {
+            "temps_s": temps_s,
+            "matrice_T": matrice_T,
+            "pertes_W": pertes_W,
+            "T_zones": copy.deepcopy(T_zones)  # Important de copier
+        }
 
         try:
             with open(chemin_complet, 'wb') as f:
-                pickle.dump(matrice_T, f)
-
-            # Stocker uniquement les métadonnées légères en RAM
-            self.index_temps.append((self.index_fichier, temps_s, pertes_W))
-            self.index_fichier += 1
-
+                pickle.dump(etat, f)
+            self.index_temps.append((temps_s, nom_fichier))
         except Exception as e:
-            self.logger.warning(f"Échec de la sauvegarde de l'étape {self.index_fichier}: {e}")
+            self.logger.error(f"Erreur lors de la sauvegarde de l'étape {temps_s}s : {e}")
 
     def charger_etape(self, index=-1):
         """Charge une étape spécifique depuis le disque (par défaut, la dernière)."""
 
         if not self.index_temps:
-            self.logger.error("Aucune étape n'a été stockée. Impossible de charger.")
-            return None, 0, 0
-
-        if index == -1:
-            index_a_charger, temps_s, pertes_W = self.index_temps[-1]
-        else:
-            try:
-                index_a_charger, temps_s, pertes_W = self.index_temps[index]
-            except IndexError:
-                self.logger.error(f"Index d'étape {index} invalide.")
-                return None, 0, 0
-
-        nom_fichier = f"etape_{index_a_charger:05d}.pkl"
-        chemin_complet = os.path.join(self.chemin_sortie, nom_fichier)
+            self.logger.error("Aucune étape n'a été stockée.")
+            return None
 
         try:
+            temps_s, nom_fichier = self.index_temps[index]
+            chemin_complet = os.path.join(self.chemin_sortie, nom_fichier)
+
             with open(chemin_complet, 'rb') as f:
-                matrice_T = pickle.load(f)
-            return matrice_T, temps_s, pertes_W
+                etat = pickle.load(f)
+            return etat
+
+        except IndexError:
+            self.logger.error(f"Index d'étape {index} hors limites.")
+            return None
         except Exception as e:
-            self.logger.error(f"Impossible de charger l'étape {index_a_charger}: {e}")
-            return None, 0, 0
+            self.logger.error(f"Impossible de charger l'étape depuis '{chemin_complet}': {e}")
+            return None
+
+
+# --- CLASSE 5: Modèle ---
+# (Contient les matrices 3D (T, Alpha, Lambda) et les méthodes de construction)
+
 

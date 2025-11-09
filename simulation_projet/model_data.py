@@ -1,71 +1,121 @@
-# --- Imports ---
 from logger import LoggerSimulation
 
 
-# --- Constantes de MATERIAUX (Base de données) ---
+# --- Constantes de MATERIAUX ---
+# (Basées sur le fichier coefficients_alpha.md)
 # Dictionnaire des propriétés des matériaux.
-# Structure: "NOM": [lambda (W/mK), rho (kg/m³), c_p (J/kg.K)]
-# L'Alpha (diffusivité) est calculé à la volée.
-# Note: "AIR" (ou tout ID < 0) est un marqueur pour une Zone d'Air (convection).
+# 'alpha' (m^2/s): Diffusivité thermique (vitesse de la chaleur)
+# 'lambda' (W/(m.K)): Conductivité thermique (isolation)
+# 'rho' (kg/m^3): Masse volumique (poids)
+# 'cp' (J/(kg.K)): Capacité thermique (stockage d'énergie)
+# 'type' (str): FIXE (T imposée), SOLIDE (calculé), ZONE (nœud d'air)
+
 MATERIAUX = {
-    # --- Marqueurs Spéciaux ---
-    # ID -1: Zone d'air (sera gérée par la convection)
-    # Les valeurs L/R/C ne sont pas utilisées pour la conduction
-    "AIR": [-1.0, 1.2, 1005],
-
-    # ID 0: Condition limite (température fixe)
-    # Les valeurs L/R/C ne sont pas utilisées pour la conduction
-    "LIMITE_FIXE": [0.0, 0.0, 0.0],
-
-    # --- Solides (calculés par conduction) ---
-    "PARPAING": [1.1, 2000, 880],
-    "VERRE": [1.0, 2500, 750],
-    "PLACO": [0.25, 900, 840],
-    "LAINE_VERRE": [0.040, 15, 840],
-    "LAINE_BOIS": [0.040, 140, 2100],
-    "BETON": [1.7, 2400, 880]
+    "LIMITE_FIXE": {  # Ex: Mur extérieur à T fixe
+        "alpha": 0.0,
+        "lambda": 0.0,
+        "rho": 0.0,
+        "cp": 0.0,
+        "type": "FIXE"
+    },
+    "AIR": {  # Nœud d'air intérieur
+        "alpha": -1,  # Marqueur spécial pour 'ZONE'
+        "lambda": 0.025,  # Utilisé pour la convection (avec h)
+        "rho": 1.2,
+        "cp": 1005.0,
+        "type": "ZONE"
+    },
+    "PARPAING": {
+        "alpha": 6.25e-7,
+        "lambda": 1.1,
+        "rho": 2000.0,
+        "cp": 880.0,
+        "type": "SOLIDE"
+    },
+    "VERRE": {
+        "alpha": 5.33e-7,
+        "lambda": 1.0,
+        "rho": 2500.0,
+        "cp": 750.0,
+        "type": "SOLIDE"
+    },
+    "PLACO": {
+        "alpha": 3.30e-7,
+        "lambda": 0.25,
+        "rho": 900.0,
+        "cp": 840.0,
+        "type": "SOLIDE"
+    },
+    "LAINE_VERRE": {
+        "alpha": 3.17e-6,
+        "lambda": 0.040,
+        "rho": 15.0,
+        "cp": 840.0,
+        "type": "SOLIDE"
+    },
+    "LAINE_BOIS": {
+        "alpha": 1.36e-7,
+        "lambda": 0.040,
+        "rho": 140.0,
+        "cp": 2100.0,
+        "type": "SOLIDE"
+    }
 }
 
+
+
+
+
+# (Classes pour stocker les états du modèle)
+
 class ZoneAir:
-    """
-    Représente un volume d'air (une "zone") dans la simulation.
-    Cette classe suit l'évolution de la température de l'air
-    en fonction des apports et des pertes par convection.
-    """
-    def __init__(self, nom, params, logger, t_init=20.0):
-        self.nom = nom
+    """Représente un nœud thermique unique pour une zone d'air."""
+
+    def __init__(self, zone_id, T_init, logger):
+        self.id = zone_id
+        self.T = T_init  # Température actuelle de la zone
+        self.volume_m3 = 0.0
+        self.capacite_thermique_J_K = 0.0  # Capacité thermique totale (C = m * cp)
         self.logger = logger
-        self.params = params
 
-        self.T_air = t_init # Température actuelle de la zone (flottant)
-        self.volume_m3 = 0.0 # Volume total (calculé par ModeleMaison)
-        self.capacite_thermique_J_K = 0.0 # Capacité thermique totale (J/K)
+        # Propriétés de l'air
+        self.rho = MATERIAUX["AIR"]["rho"]
+        self.cp = MATERIAUX["AIR"]["cp"]
 
-        # Données de l'air
-        _, self.rho_air, self.cp_air = MATERIAUX["AIR"]
+        self.logger.info(f"Zone '{self.id}' créée, T_init={T_init}°C")
 
-        self.logger.info(f"Zone '{self.nom}' créée, T_init={self.T_air}°C")
+    def ajouter_volume(self, volume_cellule_m3):
+        """Ajoute le volume d'une cellule à la zone."""
+        self.volume_m3 += volume_cellule_m3
 
-    def finaliser_volume(self):
-        """Appelée après la construction du modèle pour calculer la capacité."""
-        # Capacité (J/K) = Volume (m³) * Densité (kg/m³) * Cp (J/kg.K)
-        self.capacite_thermique_J_K = self.volume_m3 * self.rho_air * self.cp_air
+    def finaliser_setup(self):
+        """Calcule la capacité thermique totale de la zone."""
+        masse_air_kg = self.volume_m3 * self.rho
+        self.capacite_thermique_J_K = masse_air_kg * self.cp
         self.logger.info(f"Volume total: {self.volume_m3:.2f} m³")
         self.logger.info(f"Capacité thermique totale: {self.capacite_thermique_J_K:.2f} J/K")
 
-    def calculer_evolution_T(self, flux_convection_W, dt_s):
+    def calculer_evolution_T(self, puissance_W, dt):
         """
-        Met à jour la température de l'air en fonction du flux net.
-        flux_convection_W: Puissance nette reçue par l'air (en Watts).
-                           Positif = l'air se réchauffe.
-                           Négatif = l'air se refroidit.
+        Calcule la nouvelle température de la zone en fonction
+        de la puissance reçue (ou perdue) pendant dt.
+
+        Formule: Q = C * delta_T  =>  delta_T = Q / C
+        Q = Energie (Joules) = puissance_W * dt
+        C = Capacité thermique (J/K)
+
+        puissance_W > 0 : la zone reçoit de l'énergie (chauffage)
+        puissance_W < 0 : la zone perd de l'énergie (refroidissement)
         """
-        # Variation d'Énergie (Joules) = Puissance (Watts) * Temps (s)
-        delta_energie_J = flux_convection_W * dt_s
+        if self.capacite_thermique_J_K == 0:
+            self.logger.warn("Capacité thermique de la zone est nulle. T ne peut pas évoluer.")
+            return
 
-        # Variation de Température (°K ou °C) = Énergie (J) / Capacité (J/K)
-        delta_T = delta_energie_J / self.capacite_thermique_J_K
+        energie_J = puissance_W * dt
+        delta_T = energie_J / self.capacite_thermique_J_K
+        self.T += delta_T
+        self.logger.debug(f"Zone {self.id}: P={puissance_W:.2f}W, dt={dt}s, Q={energie_J:.2f}J, C={self.capacite_thermique_J_K:.2f} J/K, deltaT={delta_T:.3f}°C -> T_new={self.T:.3f}°C")
 
-        # Mettre à jour la température de l'air
-        self.T_air += delta_T
+
+
 

@@ -16,10 +16,8 @@ from logger import LoggerSimulation
 #
 MATERIAUX = {
     # 1. Air (pour les Zones de Convection)
-    # Les valeurs rho et cp sont pour la *capacité thermique* de la zone,
-    # pas pour la conduction. alpha = -1 est un marqueur.
     "AIR": {
-        "lambda": 0.0,  # Pas de conduction
+        "lambda": 0.0,
         "rho": 1.204,  # kg/m^3 (à 20°C)
         "cp": 1005.0,  # J/(kg.K)
         "type": "AIR",
@@ -65,10 +63,38 @@ MATERIAUX = {
         "rho": 140.0,
         "cp": 2100.0,
         "type": "SOLIDE"
+    },
+
+    # --- NOUVEAUX MATÉRIAUX (Sol) ---
+    "TERRE": {
+        "lambda": 1.5,  # Très variable (sec/humide)
+        "rho": 1800.0,  # Masse volumique
+        "cp": 800.0,  # Capacité thermique
+        "type": "SOLIDE"
+    },
+    "CIMENT": {  # Dalle béton
+        "lambda": 1.7,
+        "rho": 2200.0,
+        "cp": 880.0,
+        "type": "SOLIDE"
+    },
+    "XPS": {  # Polystyrène expansé/extrudé
+        "lambda": 0.035,
+        "rho": 30.0,
+        "cp": 1450.0,
+        "type": "SOLIDE"
+    },
+    "PARQUET_COMPOSITE": {
+        "lambda": 0.15,
+        "rho": 700.0,
+        "cp": 1700.0,
+        "type": "SOLIDE"
     }
 }
 
 # --- Calcul automatique de la diffusivité (alpha) pour les SOLIDES ---
+# --- CORRECTION (KeyError 'alpha') ---
+# Ce bloc doit être copié par le dispatcher dans model_data.py
 for nom, props in MATERIAUX.items():
     if props["type"] == "SOLIDE":
         # alpha = lambda / (rho * cp)
@@ -86,8 +112,8 @@ class ZoneAir:
         self.T = T_init  # Température actuelle de la zone
         self.volume_m3 = 0.0
 
-        # --- NOUVEAU: Apport de puissance ---
-        self.puissance_apport_W = 0.0  # Notre "radiateur" (W)
+        # --- Apport de puissance (Radiateur) ---
+        self.puissance_apport_W = 0.0  # (W)
 
         # Propriétés de l'air
         props = MATERIAUX["AIR"]
@@ -112,11 +138,8 @@ class ZoneAir:
 
     def calculer_evolution_T(self, puissance_pertes_W, dt_s):
         """
-        Calcule la nouvelle température de la zone en fonction des
-        pertes nettes (W) et du pas de temps (s).
-
+        Calcule la nouvelle température de la zone.
         puissance_pertes_W: Puissance *perdue* par la zone (ex: -500W).
-                           Une valeur positive signifie un *gain* (ex: +500W).
         """
 
         # Puissance nette = Apports (positifs) + Pertes (négatives)
@@ -125,13 +148,11 @@ class ZoneAir:
         # Énergie (J) = Puissance (W) * Temps (s)
         energie_J = puissance_nette_W * dt_s
 
-        # Variation de Température (K ou °C) = Énergie (J) / Capacité (J/K)
-        # S'assurer que la capacité n'est pas nulle
-        if self.capacite_thermique_J_K == 0:
+        if self.capacite_thermique_J_K > 0:
+            delta_T = energie_J / self.capacite_thermique_J_K
+        else:
             self.logger.warn(f"Zone {self.nom}: Capacité thermique nulle. DeltaT non calculé.")
             delta_T = 0.0
-        else:
-            delta_T = energie_J / self.capacite_thermique_J_K
 
         self.logger.debug(
             f"Zone {self.nom}: P_pertes={puissance_pertes_W:+.2f}W, P_apport={self.puissance_apport_W:+.2f}W -> P_net={puissance_nette_W:+.2f}W")

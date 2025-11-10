@@ -1,3 +1,5 @@
+# Fichier généré automatiquement par dispatcher_le_projet.py
+
 from logger import LoggerSimulation
 from model_data import MATERIAUX
 from model_data import ZoneAir
@@ -6,184 +8,169 @@ import numpy as np
 
 
 class ModeleMaison:
-    """
-    Contient les matrices 3D (T, Alpha, Lambda) et les méthodes
-    pour construire la géométrie de la maison.
-    """
+    """Gère la géométrie 3D, les matériaux et la détection des surfaces."""
 
     def __init__(self, params):
         self.params = params
-        self.logger = LoggerSimulation(niveau="DEBUG")
+        self.logger = params.logger
 
-        # Dimensions de la grille
-        N_x, N_y, N_z = params.N_x, params.N_y, params.N_z
+        # Création des grilles 3D (NumPy)
+        dims = (self.params.N_x, self.params.N_y, self.params.N_z)
 
-        # Matrice 3D des Températures (initialisée à T_interieur)
-        self.T = np.full((N_x, N_y, N_z), params.T_interieur_init, dtype=np.float64)
+        # Matrice de Température (initialisée à T_interieur)
+        self.T = np.full(dims, self.params.T_interieur_init, dtype=np.float64)
 
-        # Matrices 3D des propriétés (initialisées à 0)
-        self.Alpha = np.zeros((N_x, N_y, N_z), dtype=np.float64)
-        self.Lambda = np.zeros((N_x, N_y, N_z), dtype=np.float64)
-        self.RhoCp = np.zeros((N_x, N_y, N_z), dtype=np.float64)  # Capacité thermique volumique
+        # Matrice de Diffusivité (alpha)
+        self.Alpha = np.full(dims, 0.0, dtype=np.float64)
 
-        # Gestion des zones d'air (nœuds thermiques)
-        self.zones_air = {}  # Dictionnaire {id: ZoneAir}
+        # Matrice de Conductivité (lambda)
+        self.Lambda = np.full(dims, 0.0, dtype=np.float64)
 
-        # Gestion des surfaces de convection (calculées par _detecter_surfaces)
-        # Format: {zone_id: [(i, j, k), (i, j, k), ...]}
+        # Matrice de Capacité Thermique Volumique (rho * cp)
+        self.RhoCp = np.full(dims, 0.0, dtype=np.float64)
+
+        # Dictionnaire des zones d'air
+        self.zones_air = {}  # ex: {-1: ZoneAir(...)}
+
+        # Index des surfaces de convection (pré-calculé)
+        # Format: {id_zone_air: (tuple_indices_x, tuple_indices_y, tuple_indices_z)}
         self.surfaces_convection_idx = {}
-        # Format: {zone_id: np.array([[i,j,k], [i,j,k], ...])}
-        self.surfaces_convection_np = {}
 
         self.logger.info("Modèle 3D (matrices NumPy) initialisé.")
 
-    def _get_coords_indices(self, pos_m, dim_m):
-        """Convertit des coordonnées [m] en indices de grille [i, j, k]."""
-        ds = self.params.ds
+    def _coord_m_vers_idx(self, coord_m):
+        """Convertit une coordonnée physique (m) en index de grille."""
+        # round(m / ds)
+        return int(round(coord_m / self.params.ds))
 
-        # Début (arrondi à l'indice le plus proche)
-        i_min = max(0, int(round(pos_m[0] / ds)))
-        j_min = max(0, int(round(pos_m[1] / ds)))
-        k_min = max(0, int(round(pos_m[2] / ds)))
-
-        # Fin (calculée depuis la position + dimension)
-        i_max = min(self.params.N_x - 1, int(round((pos_m[0] + dim_m[0]) / ds)))
-        j_max = min(self.params.N_y - 1, int(round((pos_m[1] + dim_m[1]) / ds)))
-        k_max = min(self.params.N_z - 1, int(round((pos_m[2] + dim_m[2]) / ds)))
-
-        # Retourne des slices (ex: slice(1, 10))
-        return slice(i_min, i_max + 1), slice(j_min, j_max + 1), slice(k_min, k_max + 1)
-
-    def construire_volume_metres(self, pos_m, dim_m, nom_materiau,
-                                 zone_id=None, T_imposee=None):
+    def construire_volume_metres(self, p1_m, p2_m, nom_materiau):
         """
-        Remplit un volume de la grille basé sur des coordonnées en mètres.
+        Remplit un volume de la grille (défini en mètres) avec un matériau.
 
-        pos_m (tuple): (x, y, z) de départ en mètres.
-        dim_m (tuple): (largeur_x, largeur_y, largeur_z) en mètres.
-        nom_materiau (str): Nom du matériau (ex: "PARPAING").
-        zone_id (int): ID de la zone d'air (si matériau="AIR").
-        T_imposee (float): Température fixe (si matériau="LIMITE_FIXE").
+        p1_m: (x1, y1, z1) en mètres
+        p2_m: (x2, y2, z2) en mètres
         """
 
-        try:
-            materiau = MATERIAUX[nom_materiau]
-        except KeyError:
-            self.logger.error(f"Matériau '{nom_materiau}' inconnu. Construction annulée.")
+        # 1. Conversion des mètres en index de grille
+        # On s'assure que p1 est min et p2 est max
+        x1 = self._coord_m_vers_idx(min(p1_m[0], p2_m[0]))
+        y1 = self._coord_m_vers_idx(min(p1_m[1], p2_m[1]))
+        z1 = self._coord_m_vers_idx(min(p1_m[2], p2_m[2]))
+
+        # L'index max est N (ex: 10m / 0.1m = 100 -> index 100)
+        # On prend +1 car le 'slice' (ex: 0:11) est exclusif à la fin
+        x2 = self._coord_m_vers_idx(max(p1_m[0], p2_m[0])) + 1
+        y2 = self._coord_m_vers_idx(max(p1_m[1], p2_m[1])) + 1
+        z2 = self._coord_m_vers_idx(max(p1_m[2], p2_m[2])) + 1
+
+        # S'assure qu'on reste dans les limites de la grille
+        x1 = max(0, x1);
+        x2 = min(self.params.N_x, x2)
+        y1 = max(0, y1);
+        y2 = min(self.params.N_y, y2)
+        z1 = max(0, z1);
+        z2 = min(self.params.N_z, z2)
+
+        s = (slice(x1, x2), slice(y1, y2), slice(z1, z2))
+        self.logger.info(f"Volume {s} rempli avec '{nom_materiau}'.")
+
+        # 2. Récupérer les propriétés du matériau
+        if nom_materiau not in MATERIAUX:
+            self.logger.error(f"Matériau '{nom_materiau}' inconnu. Ignoré.")
             return
 
-        # 1. Convertir les mètres en indices
-        idx = self._get_coords_indices(pos_m, dim_m)
-        self.logger.info(f"Volume {idx} rempli avec '{nom_materiau}'.")
+        props = MATERIAUX[nom_materiau]
 
-        # 2. Remplir les matrices de propriétés
-        self.Alpha[idx] = materiau["alpha"]
-        self.Lambda[idx] = materiau["lambda"]
-        self.RhoCp[idx] = materiau["rho"] * materiau["cp"]
+        # 3. Remplir les matrices
 
-        # 3. Gérer les cas spéciaux (FIXE, ZONE)
+        if props["type"] == "AIR":
+            # Cas spécial: Zone d'air (convection)
 
-        if materiau["type"] == "FIXE":
-            # Si T_imposee n'est pas fournie, utiliser T_exterieur par défaut
-            temp = T_imposee if T_imposee is not None else self.params.T_exterieur_init
-            self.T[idx] = temp
+            # ID de la zone (ex: -1, -2...). On utilise des ID négatifs.
+            id_zone = -1 * (len(self.zones_air) + 1)
 
-        elif materiau["type"] == "ZONE":
-            if zone_id is None:
-                self.logger.error("Matériau 'AIR' requiert un 'zone_id'. Construction annulée.")
-                return
+            if id_zone not in self.zones_air:
+                self.zones_air[id_zone] = ZoneAir(
+                    f"{id_zone}",  # Nom de la zone
+                    self.logger,
+                    self.params.T_interieur_init
+                )
 
-            # Créer la zone si elle n'existe pas
-            if zone_id not in self.zones_air:
-                self.zones_air[zone_id] = ZoneAir(zone_id, self.params.T_interieur_init, self.logger)
+            # Ajoute le volume de ce bloc à la zone
+            volume_bloc_m3 = (x2 - x1) * (y2 - y1) * (z2 - z1) * (self.params.ds ** 3)
+            self.zones_air[id_zone].volume_m3 += volume_bloc_m3
 
-            # Marquer la grille avec l'ID de la zone
-            self.Alpha[idx] = zone_id  # On utilise Alpha pour stocker l'ID de zone
+            # Marque la grille avec l'ID de la zone
+            self.Alpha[s] = id_zone
+            self.Lambda[s] = 0.0  # Pas de conduction
+            self.RhoCp[s] = 0.0  # Pas de capacité (stocké dans l'objet ZoneAir)
+            # Ne pas toucher à T[s], il garde T_interieur_init
 
-            # Calculer le volume réel rempli
-            volume_cellule_m3 = self.params.ds ** 3
-            # np.count_nonzero(self.Alpha == zone_id) pourrait être lent,
-            # on approxime ou on calcule via les slices
-            indices = (idx[0].start, idx[0].stop,
-                       idx[1].start, idx[1].stop,
-                       idx[2].start, idx[2].stop)
+        elif props["type"] == "LIMITE_FIXE":
+            # Cas spécial: Condition limite (température fixe)
+            self.Alpha[s] = 0.0  # Ne diffuse pas
+            self.Lambda[s] = 0.0  # Ne conduit pas
+            self.RhoCp[s] = 0.0
+            # IMPOSER LA TEMPÉRATURE
+            self.T[s] = self.params.T_exterieur_init
 
-            nb_cellules = (indices[1] - indices[0]) * \
-                          (indices[3] - indices[2]) * \
-                          (indices[5] - indices[4])
-
-            volume_ajoute = nb_cellules * volume_cellule_m3
-            self.zones_air[zone_id].ajouter_volume(volume_ajoute)
+        elif props["type"] == "SOLIDE":
+            # Cas standard: Matériau solide (conduction)
+            self.Alpha[s] = props["alpha"]
+            self.Lambda[s] = props["lambda"]
+            self.RhoCp[s] = props["rho"] * props["cp"]
+            # La température T[s] garde sa valeur initiale (T_interieur_init)
 
     def preparer_simulation(self):
         """Finalise le modèle avant de lancer la simulation."""
         self.logger.info("Préparation de la simulation...")
-
-        # Finaliser les zones d'air (calculer capacité thermique)
+        # Finaliser la capacité thermique des zones d'air
         for zone in self.zones_air.values():
-            zone.finaliser_setup()
+            zone.finaliser_capacite()
 
-        # Détecter les surfaces de convection
+        # Détecter toutes les surfaces de convection
         self._detecter_surfaces_convection()
-
-        # TODO: Pré-calculer d'autres éléments (ex: facteurs de forme)
 
     def _detecter_surfaces_convection(self):
         """
-        Utilise NumPy pour détecter toutes les interfaces SOLIDE <-> ZONE_AIR.
-        Remplit 'self.surfaces_convection_idx' et 'self.surfaces_convection_np'.
+        Scan (en NumPy) la grille Alpha pour trouver les interfaces
+        entre 'AIR' (val < 0) et 'SOLIDE' (val >= 0).
+        Stocke les *indices des solides* en contact.
         """
         self.logger.info("Détection des surfaces de convection (NumPy)...")
 
-        # 1. Créer des masques
-        # Masque des zones d'air (alpha < 0)
-        masque_air = self.Alpha < 0
-        # Masque des solides (alpha >= 0 ET type != FIXE)
-        masque_solide = (self.Alpha >= 0) & (self.Lambda > 0)  # Lambda > 0 exclut les 'FIXE'
+        # Pour chaque zone d'air (ex: id_zone = -1)
+        for id_zone, zone in self.zones_air.items():
+            # 1. Créer un masque 'True' là où se trouve la zone d'air
+            masque_air = (self.Alpha == id_zone)
 
-        # 2. Itérer sur les 6 directions (voisins)
-        directions = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+            # 2. Créer un masque 'True' là où se trouvent les solides
+            # (alpha >= 0, mais on exclut LIMITE_FIXE qui a alpha=0)
+            masque_solide = (self.Alpha > 0)
 
-        # Utilise un set pour éviter les doublons (une cellule peut toucher l'air de 2 côtés)
-        surfaces_par_zone = {}  # {zone_id: set((i,j,k))}
+            # 3. Trouver les interfaces
+            surfaces = np.zeros_like(self.Alpha, dtype=bool)
 
-        for d in directions:
-            # Décaler le masque 'air'
-            masque_air_decale = np.roll(masque_air, shift=d, axis=(0, 1, 2))
+            # Vérifie les 6 voisins (X, Y, Z)
+            # Un solide est une surface si son voisin est de l'air
+            surfaces[1:, :, :] |= (masque_solide[1:, :, :] & masque_air[:-1, :, :])
+            surfaces[:-1, :, :] |= (masque_solide[:-1, :, :] & masque_air[1:, :, :])
 
-            # L'interface est là où un 'solide' touche un 'air' décalé
-            interface = masque_solide & masque_air_decale
+            surfaces[:, 1:, :] |= (masque_solide[:, 1:, :] & masque_air[:, :-1, :])
+            surfaces[:, :-1, :] |= (masque_solide[:, :-1, :] & masque_air[:, 1:, :])
 
-            # Récupérer les indices (i,j,k) des solides sur l'interface
-            indices_interface = np.argwhere(interface)
+            surfaces[:, :, 1:] |= (masque_solide[:, :, 1:] & masque_air[:, :, :-1])
+            surfaces[:, :, :-1] |= (masque_solide[:, :, :-1] & masque_air[:, :, 1:])
 
-            # Récupérer les IDs des zones d'air qu'ils touchent
-            # (en regardant le masque alpha décalé dans l'autre sens)
-            indices_air_touches = (
-                (indices_interface[:, 0] - d[0]) % self.params.N_x,
-                (indices_interface[:, 1] - d[1]) % self.params.N_y,
-                (indices_interface[:, 2] - d[2]) % self.params.N_z
-            )
+            # 4. Stocker les indices (format tuple (i, j, k))
+            indices_tuple = np.where(surfaces)
+            self.surfaces_convection_idx[id_zone] = indices_tuple
 
-            zone_ids_touches = self.Alpha[indices_air_touches]
-
-            # Ajouter les indices des solides au bon set
-            for i in range(len(indices_interface)):
-                idx_tuple = tuple(indices_interface[i])
-                zone_id = zone_ids_touches[i]
-
-                if zone_id not in surfaces_par_zone:
-                    surfaces_par_zone[zone_id] = set()
-                surfaces_par_zone[zone_id].add(idx_tuple)
-
-        # 3. Convertir les sets en listes/arrays NumPy
-        for zone_id, idx_set in surfaces_par_zone.items():
-            self.surfaces_convection_idx[zone_id] = list(idx_set)
-            self.surfaces_convection_np[zone_id] = np.array(list(idx_set))
-            self.logger.info(f"Détection terminée: {len(idx_set)} cellules de surface trouvées pour Zone {zone_id}.")
+            nb_surfaces = len(indices_tuple[0])
+            self.logger.info(f"Détection terminée: {nb_surfaces} cellules de surface trouvées pour Zone {zone.nom}.")
 
 
-# --- CLASSE 6: Simulation ---
-# (Contient le moteur de calcul principal)
+# --- CLASSE 6: Moteur de Simulation ---
+# (Contient la boucle de calcul principale)
 
 

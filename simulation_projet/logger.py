@@ -1,8 +1,10 @@
+# Fichier généré automatiquement par dispatcher_le_projet.py
+
 import time
 
 
 class LoggerSimulation:
-    """Classe simple pour gérer les logs avec niveaux (INFO, DEBUG)."""
+    """Classe simple pour gérer les niveaux de log (INFO, DEBUG, WARN)."""
 
     NIVEAUX = {
         "DEBUG": 1,
@@ -12,28 +14,27 @@ class LoggerSimulation:
     }
 
     def __init__(self, niveau="INFO"):
-        self.niveau_seuil = self.NIVEAUX.get(niveau.upper(), 2)
+        self.niveau_log = self.NIVEAUX.get(niveau.upper(), 2)
 
-    def _log(self, niveau, message):
-        """Fonction de log interne."""
-        if self.NIVEAUX.get(niveau, 0) >= self.niveau_seuil:
-            timestamp = time.strftime("[%H:%M:%S]", time.localtime())
-            print(f"{timestamp} [{niveau}] {message}")
+    def _log(self, message, niveau):
+        if self.NIVEAUX.get(niveau, 0) >= self.niveau_log:
+            heure = time.strftime("%H:%M:%S", time.localtime())
+            print(f"[{heure}] [{niveau}] {message}")
 
     def debug(self, message):
-        self._log("DEBUG", message)
+        self._log(message, "DEBUG")
 
     def info(self, message):
-        self._log("INFO", message)
+        self._log(message, "INFO")
 
     def warn(self, message):
-        self._log("WARN", message)
+        self._log(message, "WARN")
 
     def error(self, message):
-        self._log("ERROR", message)
+        self._log(message, "ERROR")
 
 
 # --- CLASSE 2: Paramètres ---
-# (Conteneur pour les paramètres globaux de la simulation)
+# (Stocke tous les paramètres fixes de la simulation)
 
 

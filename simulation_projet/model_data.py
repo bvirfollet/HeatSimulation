@@ -1,60 +1,66 @@
+# Fichier généré automatiquement par dispatcher_le_projet.py
+
 from logger import LoggerSimulation
 
 
-# --- Constantes de MATERIAUX ---
-# (Basées sur le fichier coefficients_alpha.md)
-# Dictionnaire des propriétés des matériaux.
-# 'alpha' (m^2/s): Diffusivité thermique (vitesse de la chaleur)
-# 'lambda' (W/(m.K)): Conductivité thermique (isolation)
-# 'rho' (kg/m^3): Masse volumique (poids)
-# 'cp' (J/(kg.K)): Capacité thermique (stockage d'énergie)
-# 'type' (str): FIXE (T imposée), SOLIDE (calculé), ZONE (nœud d'air)
-
+# --- Constantes de MATERIAUX (Dictionnaire) ---
+# Chaque matériau est défini par:
+# (lambda (W/mK), rho (kg/m^3), cp (J/kgK))
+#
+# L'alpha (diffusivité) est calculé automatiquement (alpha = lambda / (rho * cp))
+#
+# Note sur les 'types':
+# 'SOLIDE': Matériau standard, calculé par conduction (ex: PARPAING)
+# 'LIMITE_FIXE': Température fixe, n'évolue pas (ex: Extérieur)
+# 'AIR': Nœud d'air, calculé par convection (ex: 'Zone -1')
+#
 MATERIAUX = {
-    "LIMITE_FIXE": {  # Ex: Mur extérieur à T fixe
-        "alpha": 0.0,
+    # 1. Air (pour les Zones de Convection)
+    # Les valeurs rho et cp sont pour la *capacité thermique* de la zone,
+    # pas pour la conduction. alpha = -1 est un marqueur.
+    "AIR": {
+        "lambda": 0.0,  # Pas de conduction
+        "rho": 1.204,  # kg/m^3 (à 20°C)
+        "cp": 1005.0,  # J/(kg.K)
+        "type": "AIR",
+        "alpha": -1.0
+    },
+
+    # 2. Conditions aux limites
+    "LIMITE_FIXE": {
         "lambda": 0.0,
         "rho": 0.0,
         "cp": 0.0,
-        "type": "FIXE"
+        "type": "LIMITE_FIXE",
+        "alpha": 0.0  # Ne diffuse pas
     },
-    "AIR": {  # Nœud d'air intérieur
-        "alpha": -1,  # Marqueur spécial pour 'ZONE'
-        "lambda": 0.025,  # Utilisé pour la convection (avec h)
-        "rho": 1.2,
-        "cp": 1005.0,
-        "type": "ZONE"
-    },
+
+    # 3. Solides (Murs, Isolants, etc.)
     "PARPAING": {
-        "alpha": 6.25e-7,
         "lambda": 1.1,
         "rho": 2000.0,
         "cp": 880.0,
         "type": "SOLIDE"
     },
     "VERRE": {
-        "alpha": 5.33e-7,
         "lambda": 1.0,
         "rho": 2500.0,
         "cp": 750.0,
         "type": "SOLIDE"
     },
     "PLACO": {
-        "alpha": 3.30e-7,
         "lambda": 0.25,
         "rho": 900.0,
         "cp": 840.0,
         "type": "SOLIDE"
     },
     "LAINE_VERRE": {
-        "alpha": 3.17e-6,
         "lambda": 0.040,
         "rho": 15.0,
         "cp": 840.0,
         "type": "SOLIDE"
     },
     "LAINE_BOIS": {
-        "alpha": 1.36e-7,
         "lambda": 0.040,
         "rho": 140.0,
         "cp": 2100.0,
@@ -62,59 +68,77 @@ MATERIAUX = {
     }
 }
 
+# --- Calcul automatique de la diffusivité (alpha) pour les SOLIDES ---
+for nom, props in MATERIAUX.items():
+    if props["type"] == "SOLIDE":
+        # alpha = lambda / (rho * cp)
+        props["alpha"] = props["lambda"] / (props["rho"] * props["cp"])
 
 
 
-
-# (Classes pour stocker les états du modèle)
 
 class ZoneAir:
-    """Représente un nœud thermique unique pour une zone d'air."""
+    """Représente un volume d'air (nœud) à une température unique."""
 
-    def __init__(self, zone_id, T_init, logger):
-        self.id = zone_id
+    def __init__(self, nom, logger, T_init=20.0):
+        self.nom = nom
+        self.logger = logger
         self.T = T_init  # Température actuelle de la zone
         self.volume_m3 = 0.0
-        self.capacite_thermique_J_K = 0.0  # Capacité thermique totale (C = m * cp)
-        self.logger = logger
+
+        # --- NOUVEAU: Apport de puissance ---
+        self.puissance_apport_W = 0.0  # Notre "radiateur" (W)
 
         # Propriétés de l'air
-        self.rho = MATERIAUX["AIR"]["rho"]
-        self.cp = MATERIAUX["AIR"]["cp"]
+        props = MATERIAUX["AIR"]
+        self.rho = props["rho"]
+        self.cp = props["cp"]
 
-        self.logger.info(f"Zone '{self.id}' créée, T_init={T_init}°C")
+        # Capacité thermique totale (J/K) = V * rho * cp
+        self.capacite_thermique_J_K = 0.0
 
-    def ajouter_volume(self, volume_cellule_m3):
-        """Ajoute le volume d'une cellule à la zone."""
-        self.volume_m3 += volume_cellule_m3
+        self.logger.info(f"Zone '{self.nom}' créée, T_init={self.T}°C")
 
-    def finaliser_setup(self):
-        """Calcule la capacité thermique totale de la zone."""
-        masse_air_kg = self.volume_m3 * self.rho
-        self.capacite_thermique_J_K = masse_air_kg * self.cp
+    def set_apport_puissance(self, puissance_W):
+        """Règle la puissance du "radiateur" pour cette zone."""
+        self.puissance_apport_W = puissance_W
+        self.logger.info(f"Zone '{self.nom}': Apport de puissance réglé à {puissance_W} W.")
+
+    def finaliser_capacite(self):
+        """Doit être appelée après que le volume total est connu."""
+        self.capacite_thermique_J_K = self.volume_m3 * self.rho * self.cp
         self.logger.info(f"Volume total: {self.volume_m3:.2f} m³")
         self.logger.info(f"Capacité thermique totale: {self.capacite_thermique_J_K:.2f} J/K")
 
-    def calculer_evolution_T(self, puissance_W, dt):
+    def calculer_evolution_T(self, puissance_pertes_W, dt_s):
         """
-        Calcule la nouvelle température de la zone en fonction
-        de la puissance reçue (ou perdue) pendant dt.
+        Calcule la nouvelle température de la zone en fonction des
+        pertes nettes (W) et du pas de temps (s).
 
-        Formule: Q = C * delta_T  =>  delta_T = Q / C
-        Q = Energie (Joules) = puissance_W * dt
-        C = Capacité thermique (J/K)
-
-        puissance_W > 0 : la zone reçoit de l'énergie (chauffage)
-        puissance_W < 0 : la zone perd de l'énergie (refroidissement)
+        puissance_pertes_W: Puissance *perdue* par la zone (ex: -500W).
+                           Une valeur positive signifie un *gain* (ex: +500W).
         """
+
+        # Puissance nette = Apports (positifs) + Pertes (négatives)
+        puissance_nette_W = self.puissance_apport_W + puissance_pertes_W
+
+        # Énergie (J) = Puissance (W) * Temps (s)
+        energie_J = puissance_nette_W * dt_s
+
+        # Variation de Température (K ou °C) = Énergie (J) / Capacité (J/K)
+        # S'assurer que la capacité n'est pas nulle
         if self.capacite_thermique_J_K == 0:
-            self.logger.warn("Capacité thermique de la zone est nulle. T ne peut pas évoluer.")
-            return
+            self.logger.warn(f"Zone {self.nom}: Capacité thermique nulle. DeltaT non calculé.")
+            delta_T = 0.0
+        else:
+            delta_T = energie_J / self.capacite_thermique_J_K
 
-        energie_J = puissance_W * dt
-        delta_T = energie_J / self.capacite_thermique_J_K
+        self.logger.debug(
+            f"Zone {self.nom}: P_pertes={puissance_pertes_W:+.2f}W, P_apport={self.puissance_apport_W:+.2f}W -> P_net={puissance_nette_W:+.2f}W")
+        self.logger.debug(
+            f"Zone {self.nom}: Q_net={energie_J:+.2f}J, C={self.capacite_thermique_J_K:.2f} J/K, deltaT={delta_T:+.3f}°C -> T_new={self.T + delta_T:.3f}°C")
+
         self.T += delta_T
-        self.logger.debug(f"Zone {self.id}: P={puissance_W:.2f}W, dt={dt}s, Q={energie_J:.2f}J, C={self.capacite_thermique_J_K:.2f} J/K, deltaT={delta_T:.3f}°C -> T_new={self.T:.3f}°C")
 
 
 

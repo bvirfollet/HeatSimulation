@@ -1,12 +1,16 @@
 
-import time
+# Fichier généré automatiquement par dispatcher_le_projet.py
+import os
 import shutil
+import copy
+import time
+import numpy as np
+import sys
 from logger import LoggerSimulation
 from parametres import ParametresSimulation
 from model_data import MATERIAUX, ZoneAir
 from modele import ModeleMaison
 from simulation import Simulation
-from stockage import StockageResultats
 from visualisation import Visualisation
 
 def main():
@@ -15,95 +19,125 @@ def main():
     logger = LoggerSimulation(niveau="DEBUG")
     logger.info("--- Démarrage de la Simulation de Test ---")
 
-    # --- 1. Paramètres ---
-    # Utiliser un pas de temps plus court pour les logs
-    # --- CORRECTION (Intervalle Log) ---
-    duree_sim_s = 7200 # 2 heures
-    intervalle_log_s = 60 # 1 minute
-
+    # 1. Nettoyer les anciens résultats
     chemin_resultats = "resultats_sim"
-
-    # Nettoyer les anciens résultats
-    import os
     if os.path.exists(chemin_resultats):
         try:
             shutil.rmtree(chemin_resultats)
             logger.info(f"Ancien dossier de résultats '{chemin_resultats}' supprimé.")
         except Exception as e:
-            logger.error(f"Impossible de supprimer '{chemin_resultats}': {e}")
+            logger.warn(f"Impossible de supprimer l'ancien dossier: {e}")
 
+    # 2. Créer les paramètres
+    # On teste une boîte de 1m x 1m x 1m
     params = ParametresSimulation(
-        N_x=11, N_y=11, N_z=11, # Grille 11x11x11 points
+        logger=logger,
+        dims_m=(1.0, 1.0, 1.0),
         ds=0.1,  # Cellules de 10cm
         dt=20.0, # Pas de temps de 20s
         T_interieur_init=20.0,
         T_exterieur_init=0.0
     )
 
-    # --- 2. Construction du Modèle ---
+    # 3. Construire le modèle de la maison
     modele = ModeleMaison(params)
 
-    # Dimensions (1m x 1m x 1m)
-    dim_ext = (1.0, 1.0, 1.0)
-    pos_ext = (0.0, 0.0, 0.0)
+    # --- CORRECTION (Ordre de Construction) ---
+    # On construit de l'extérieur vers l'intérieur pour que
+    # l'intérieur (20°C) écrase l'extérieur (0°C).
 
-    # Intérieur (0.8m x 0.8m x 0.8m)
-    dim_int = (0.8, 0.8, 0.8)
-    pos_int = (0.1, 0.1, 0.1)
+    # 1. Remplir tout de LIMITE_FIXE (0°C)
+    modele.construire_volume_metres(
+        (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), "LIMITE_FIXE"
+    )
 
-    # Mur en parpaing (0.1m x 0.8m x 0.8m)
-    dim_mur = (0.1, 0.8, 0.8)
-    pos_mur = (0.8, 0.1, 0.1)
+    # 2. "Tailler" le Parpaing (à 20°C)
+    # Mur du fond + Mur de droite
+    modele.construire_volume_metres(
+        (0.1, 0.1, 0.1), (0.9, 0.2, 0.9), "PARPAING"
+    )
+    modele.construire_volume_metres(
+        (0.8, 0.1, 0.1), (0.9, 0.9, 0.9), "PARPAING"
+    )
 
-    # --- CORRECTION (Bug de T° Initiale) ---
-    # On construit de l'intérieur vers l'extérieur
 
-    # 1. Remplir les limites extérieures (T=0°C)
-    modele.construire_volume_metres(pos_ext, dim_ext, "LIMITE_FIXE",
-                                     T_imposee=params.T_exterieur_init)
+    # 3. "Tailler" l'Air (à 20°C)
+    modele.construire_volume_metres(
+        (0.1, 0.2, 0.1), (0.8, 0.9, 0.9), "AIR"
+    )
 
-    # 2. Remplir l'air intérieur (T=20°C par défaut)
-    modele.construire_volume_metres(pos_int, dim_int, "AIR", zone_id=-1)
-
-    # 3. Remplir le mur en parpaing (T=20°C par défaut)
-    modele.construire_volume_metres(pos_mur, dim_mur, "PARPAING")
+    # --- NOUVEAU: Ajout d'une source de chaleur (Radiateur) ---
+    # On ajoute 50W à la zone d'air (id = -1)
+    if -1 in modele.zones_air:
+        modele.zones_air[-1].set_apport_puissance(50.0)
 
     # Préparer le modèle (détecter les surfaces, etc.)
     modele.preparer_simulation()
 
-    # --- 3. Initialisation de la Simulation ---
-    stockage = StockageResultats(chemin_resultats, logger)
-    sim = Simulation(modele, params, stockage)
+    # 4. Créer et lancer la simulation
+    sim = Simulation(modele, params, chemin_sortie=chemin_resultats)
 
-    # --- 4. Lancement ---
-    start_time = time.time()
-    sim.lancer_simulation(duree_s=duree_sim_s, intervalle_stockage_s=intervalle_log_s)
-    end_time = time.time()
+    temps_debut_calcul = time.time()
 
-    logger.info(f"Temps de calcul: {end_time - start_time:.2f} secondes.")
+    sim.lancer_simulation(
+        duree_s=7200,                # 2 heures
+        intervalle_stockage_s=60     # Log/Stockage chaque minute
+    )
 
-    # Log de la T° finale
-    T_zones_finales = {zid: zone.T for zid, zone in sim.zones_air.items()}
-    logger.info(f"--- Température Finale de l'Air: {T_zones_finales} ---")
+    temps_fin_calcul = time.time()
+    logger.info(f"Temps de calcul: {(temps_fin_calcul - temps_debut_calcul):.2f} secondes.")
 
-    # --- 5. Visualisation ---
+    temps_air_final = {nom: zone.T for nom, zone in modele.zones_air.items()}
+    logger.info(f"--- Température Finale de l'Air: {temps_air_final} ---")
+
+    # 5. Visualiser les résultats
     visualiseur = Visualisation(sim)
 
-    # Validation Étape 1: Voir les surfaces de convection
+    # Validation Étape 1: Montrer les surfaces de convection détectées
     logger.info("--- Validation Étape 1: Visualisation des Surfaces de Convection ---")
     visualiseur.visualiser_surfaces_convection()
 
-    # Visualisation finale (Heatmap)
-    logger.info("--- Visualisation des Résultats (Heatmap) ---")
+    # --- NOUVEAU: Visualisation multi-étapes ---
+
+    # Visualisation t=0
+    logger.info("--- Visualisation Résultat (t=0s) ---")
+    visualiseur.visualiser_resultat(
+        etape_index=0, # Première étape
+        downsample_factor=1,
+        temp_min=0.0,
+        temp_max=25.0
+    )
+
+    # Visualisation t=3600s (milieu)
+    # L'index 60 = 3600s / 60s/étape
+    logger.info("--- Visualisation Résultat (t=3600s) ---")
+    visualiseur.visualiser_resultat(
+        etape_index=60, 
+        downsample_factor=1,
+        temp_min=0.0,
+        temp_max=25.0
+    )
+
+    # Visualisation finale (t=7200s)
+    logger.info("--- Visualisation Résultat (t=7200s) ---")
     visualiseur.visualiser_resultat(
         etape_index=-1, # Dernière étape
         downsample_factor=1,
         temp_min=0.0,
-        temp_max=20.0
+        temp_max=25.0 # Augmenté pour voir le chauffage
     )
 
     logger.info("--- Fin de la simulation de test ---")
 
 
+# --- CORRECTION: Ceci est le point d'entrée correct pour main.py ---
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Attrape l'erreur au plus haut niveau pour le log
+        logger_global = LoggerSimulation("ERROR")
+        logger_global.error(f"Une erreur fatale est survenue: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

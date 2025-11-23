@@ -1,0 +1,39 @@
+
+/* Fichier CSS pour l'éditeur TUI creer_modele.py */
+
+#left-panel {
+    width: 30;
+    height: 100%;
+    border-right: solid white;
+    padding: 1;
+}
+
+#main-view {
+    width: 1fr;
+    height: 100%;
+}
+
+#plan-view {
+    /* Le PlanWidget utilise render() pour générer du texte formaté */
+    width: 100%;
+    height: 100%;
+}
+
+#status-bar {
+    dock: bottom;
+    width: 100%;
+    height: 1;
+    background: $primary;
+    color: $text;
+}
+
+#palette-title {
+    padding-top: 1;
+    text-style: bold;
+}
+
+/* Style pour le matériau sélectionné (via l'observateur watch_) */
+Label {
+    height: 1;
+    margin-bottom: 1;
+}

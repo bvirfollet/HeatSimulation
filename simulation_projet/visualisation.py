@@ -1,6 +1,7 @@
 # Fichier généré automatiquement par dispatcher_le_projet.py
 
 from logger import LoggerSimulation
+from model_data import MATERIAUX
 from modele import ModeleMaison
 from parametres import ParametresSimulation
 from stockage import StockageResultats
@@ -12,6 +13,7 @@ class Visualisation:
     """Gère la visualisation 3D des résultats avec PyVista."""
 
     def __init__(self, simulation):
+        """Initialise le visualiseur en liant la simulation."""
         self.simulation = simulation
         self.modele = simulation.modele
         self.stockage = simulation.stockage
@@ -28,26 +30,33 @@ class Visualisation:
         grid.origin = (0.0, 0.0, 0.0)
         return grid
 
-    def visualiser_structure(self, downsample_factor=1):
-        """Affiche la structure 3D des *matériaux* (basée sur Alpha)."""
-        self.logger.info(f"Visualisation de la structure (downsample x{downsample_factor})...")
+    # --- SUPPRESSION (Matplotlib) ---
+    # La fonction visualiser_structure_en_coupes_2d() a été supprimée.
+
+    # --- NOUVELLE VISUALISATION (Proposition B) ---
+    def visualiser_structure_slicer_3d(self):
+        """
+        Affiche la structure 3D avec un "slicer" (plan de coupe)
+        interactif pour voir à l'intérieur.
+        """
+        self.logger.info("Visualisation de la structure avec Slicer 3D (PyVista)...")
 
         grid = self._creer_grille_pyvista()
+        # On utilise Alpha, car il définit les matériaux
         grid.point_data["alpha"] = self.modele.Alpha.ravel(order='F')
 
-        if downsample_factor > 1:
-            voi = (0, self.params.N_x - 1, 0, self.params.N_y - 1, 0, self.params.N_z - 1)
-            rate = (downsample_factor, downsample_factor, downsample_factor)
-            grid = grid.extract_subset(voi, rate=rate)
-
-        # Filtre : ne garde que les solides (alpha >= 0)
-        solides = grid.threshold(0.0, scalars="alpha")
-
         plotter = pv.Plotter(window_size=[800, 600])
-        plotter.add_mesh(solides, cmap="bone", opacity=0.5)
+
+        # Ajoute un "widget" de plan de coupe (slicer)
+        plotter.add_mesh_slice_orthogonal(
+            grid,
+            scalars="alpha",
+            cmap="viridis"  # Colormap pour les matériaux
+        )
+
         plotter.add_axes_at_origin()
 
-        self.logger.info("Affichage de la fenêtre PyVista (structure)...")
+        self.logger.info("Affichage de la fenêtre PyVista (Slicer)...")
         plotter.show()
 
     def visualiser_surfaces_convection(self):
@@ -86,9 +95,13 @@ class Visualisation:
         self.logger.info("Affichage (Validation): Murs (gris) et Surfaces de Convection (rouge)...")
         plotter.show()
 
+    # --- MODIFICATION: Visualisation de la Heatmap ---
     def visualiser_resultat(self, etape_index=-1, downsample_factor=1,
                             temp_min=0.0, temp_max=20.0):
-        """Affiche une "heatmap" 3D (rendu volumétrique)."""
+        """
+        Affiche une "heatmap" 3D en utilisant le même "slicer" 3D
+        que la visualisation de la structure.
+        """
 
         etat = self.stockage.charger_etape(etape_index)
         if etat is None:
@@ -116,22 +129,20 @@ class Visualisation:
             grid = grid.extract_subset(voi, rate=rate)
 
         plotter = pv.Plotter(window_size=[800, 600])
-        cmap = "coolwarm"
-        milieu = (temp_min + temp_max) / 2.0
-        opacity_map = [0.8, 0.0, 0.8]  # Min=Opaque, Milieu=Transparent, Max=Opaque
+        cmap = "coolwarm"  # Bleu (froid) vers Rouge (chaud)
 
-        plotter.add_volume(
+        # --- MODIFICATION: Remplacer add_volume par add_mesh_slice_orthogonal ---
+        plotter.add_mesh_slice_orthogonal(
             grid,
             scalars="temp",
             cmap=cmap,
-            opacity=opacity_map,
-            scalar_bar_args={'title': 'Température (°C)'},
-            clim=[temp_min, temp_max]
+            clim=[temp_min, temp_max],  # Applique la plage de température
+            scalar_bar_args={'title': 'Température (°C)'}
         )
 
         plotter.add_axes_at_origin()
 
-        self.logger.info("Lancement de la visualisation PyVista (heatmap)...")
+        self.logger.info("Lancement de la visualisation PyVista (Heatmap Slicer)...")
         plotter.show()
 
 

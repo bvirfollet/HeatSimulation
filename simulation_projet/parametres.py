@@ -8,7 +8,7 @@ class ParametresSimulation:
 
     def __init__(self, logger,
                  dims_m=(1.0, 1.0, 1.0),
-                 ds=0.1, dt=20.0,
+                 ds=0.1, dt=10.0,
                  T_interieur_init=20.0,
                  T_exterieur_init=0.0,
                  # --- NOUVEAU: Température du Sol ---
@@ -42,9 +42,3 @@ class ParametresSimulation:
             f"Paramètres créés. Grille: {self.N_x}x{self.N_y}x{self.N_z} ({self.N_x * self.N_y * self.N_z} points)")
         self.logger.debug(f"Dimensions: {self.L_x}m x {self.L_y}m x {self.L_z}m")
         self.logger.debug(f"Discrétisation: ds={self.ds}m, dt={self.dt}s")
-
-
-# --- CLASSE 3: Données du Modèle ---
-# (Classes pour stocker les données physiques : ZoneAir)
-
-

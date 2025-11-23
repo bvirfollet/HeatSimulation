@@ -1,4 +1,4 @@
-MATERIAUX = {
+MATERIAUX_ = {
     "AIR_IMMOBILE": {
         "alpha": 2.07e-5,  # m^2/s
         "lambda": 0.025  # W/(m.K)

@@ -40,13 +40,7 @@ MATERIAUX = {
         "cp": 880.0,
         "type": "SOLIDE"
     },
-    "VERRE": {
-        "lambda": 1.0,
-        "rho": 2500.0,
-        "cp": 750.0,
-        "type": "SOLIDE"
-    },
-    "PLACO": {
+    "PLACO": {  # BA13
         "lambda": 0.25,
         "rho": 900.0,
         "cp": 840.0,
@@ -67,18 +61,18 @@ MATERIAUX = {
 
     # --- NOUVEAUX MATÉRIAUX (Sol) ---
     "TERRE": {
-        "lambda": 1.5,  # Très variable (sec/humide)
-        "rho": 1800.0,  # Masse volumique
-        "cp": 800.0,  # Capacité thermique
+        "lambda": 1.5,
+        "rho": 1800.0,
+        "cp": 800.0,
         "type": "SOLIDE"
     },
-    "CIMENT": {  # Dalle béton
+    "BETON": {  # Dalle béton (anciennement CIMENT)
         "lambda": 1.7,
         "rho": 2200.0,
         "cp": 880.0,
         "type": "SOLIDE"
     },
-    "XPS": {  # Polystyrène expansé/extrudé
+    "POLYSTYRENE": {  # Polystyrène expansé/extrudé (anciennement XPS)
         "lambda": 0.035,
         "rho": 30.0,
         "cp": 1450.0,
@@ -88,6 +82,33 @@ MATERIAUX = {
         "lambda": 0.15,
         "rho": 700.0,
         "cp": 1700.0,
+        "type": "SOLIDE"
+    },
+
+    # --- NOUVEAUX MATÉRIAUX (demande utilisateur) ---
+    "CARRELAGE": {
+        "lambda": 1.0,
+        "rho": 2200.0,
+        "cp": 850.0,
+        "type": "SOLIDE"
+    },
+    "PVC": {  # Revêtement PVC
+        "lambda": 0.17,
+        "rho": 1400.0,
+        "cp": 1000.0,
+        "type": "SOLIDE"
+    },
+
+    # --- NOUVEAU MATÉRIAU COMPOSITE ---
+    "MUR_COMPOSITE_EXT": {
+        # Simule 20cm (2 voxels) de :
+        # 15cm Parpaing + 5cm Polystyrène + 1.3cm Placo
+        # R_total = 0.15/1.1 + 0.05/0.035 + 0.013/0.25 = 1.616
+        # Lambda_eq (pour 20cm) = 0.20 / 1.616 = 0.124 W/mK
+        "lambda": 0.124,
+        # Propriétés massiques dominées par le parpaing
+        "rho": 1475.0,
+        "cp": 882.0,
         "type": "SOLIDE"
     }
 }

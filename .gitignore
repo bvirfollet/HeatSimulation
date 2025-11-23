@@ -2,3 +2,6 @@
 __pycache__
 resultats_sim
 venv
+*.json
+!mcp_config.json
+*.pkl

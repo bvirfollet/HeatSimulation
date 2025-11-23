@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "house-3d-model": {
+      "command": "python3",
+      "args": [
+        "/home/user/HeatSimulation/mcp_server.py"
+      ],
+      "env": {},
+      "description": "Serveur MCP pour la construction de modèles volumétriques 3D de maisons"
+    }
+  }
+}
